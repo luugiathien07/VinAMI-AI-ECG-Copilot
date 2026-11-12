@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from apps.api.app import create_app
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from vinami.ecg.adapters.ingestion import build_demo_waveform
 from vinami.identity.adapters.development import DEVELOPMENT_IDENTITIES
 from vinami.shared.config import Settings
+from vinami.shared.container import AppContainer
 from vinami.shared.logging import configure_logging, log_event
 
 BASE_TIME = datetime(2026, 7, 17, 8, 0, tzinfo=UTC)
@@ -45,7 +47,8 @@ def main() -> None:
             record_outcome=False,
             complete_task=True,
         )
-        summary = client.app.state.container.event_dispatcher().dispatch_pending(limit=500)
+        container = cast(AppContainer, cast(FastAPI, client.app).state.container)
+        summary = container.event_dispatcher().dispatch_pending(limit=500)
         log_event(
             logger,
             "demo_happy_cases_seeded",

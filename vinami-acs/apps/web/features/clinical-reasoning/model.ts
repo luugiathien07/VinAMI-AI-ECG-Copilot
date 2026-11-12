@@ -68,3 +68,16 @@ export type ClinicalReasoningWorkspaceView = z.infer<
 >;
 export type AssessmentView = z.infer<typeof assessmentSchema>;
 export type DecisionView = z.infer<typeof decisionSchema>;
+
+// TODO: replace with generated types from packages/contracts once `pnpm api:generate`
+// is rerun against a running API that includes the risk-scores endpoints.
+export const riskScoreSchema = z.object({
+  risk_score_id: z.string().uuid().nullable(),
+  name: z.string(),
+  value: z.number(),
+  category: z.string(),
+  algorithm_version: z.string(),
+  calculated_at: z.string(),
+});
+export const riskScoreListSchema = z.array(riskScoreSchema);
+export type RiskScoreView = z.infer<typeof riskScoreSchema>;

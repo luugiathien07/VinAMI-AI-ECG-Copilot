@@ -7,6 +7,10 @@ from datetime import datetime
 
 from vinami.shared.domain import DomainInvariantError, require_text, require_utc
 
+# Shared with vinami.reasoning.domain.engine/risk_scores; kept here (a leaf module with no
+# intra-context dependents) so those two modules can both use it without an import cycle.
+NOTICE = "Demonstration rule — not for clinical use."
+
 
 @dataclass(frozen=True, slots=True)
 class RiskScore:

@@ -6,7 +6,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-NOTICE = "Demonstration rule — not for clinical use."
+from vinami.reasoning.domain.model import NOTICE
+from vinami.reasoning.domain.risk_scores import (
+    GraceRiskCategory,
+    HeartRiskCategory,
+    classify_grace_risk,
+    classify_heart_risk,
+)
 
 
 class Pathway(StrEnum):
@@ -33,7 +39,12 @@ class RuleSpecification:
 
 @dataclass(frozen=True, slots=True)
 class ReasoningInput:
-    """Normalized evidence supplied by bounded contexts, not raw model tensors."""
+    """Normalized evidence supplied by bounded contexts, not raw model tensors.
+
+    `risk_scores` holds point totals keyed by `RiskScore.name` (e.g.
+    `{"HEART": 5.0, "GRACE": 145.0}`), produced by
+    `vinami.reasoning.domain.risk_scores.calculate_heart_score`/`calculate_grace_score`.
+    """
 
     symptoms: Mapping[str, bool]
     vitals: Mapping[str, float]
@@ -85,6 +96,14 @@ class ClinicalReasoningEngine:
             return self._trace(
                 Pathway.VERY_HIGH_RISK_REVIEW, specification, ("unresolved safety alert",), (), ()
             )
+        if self._high_risk_score(data):
+            return self._trace(
+                Pathway.HIGH_RISK_REVIEW,
+                specification,
+                ("high HEART or GRACE risk score",),
+                (),
+                (),
+            )
         if len(data.troponin_ratios) > 1 and data.troponin_ratios[-1] > data.troponin_ratios[-2]:
             return self._trace(
                 Pathway.HIGH_RISK_REVIEW, specification, ("rising normalized troponin",), (), ()
@@ -117,6 +136,14 @@ class ClinicalReasoningEngine:
             "encounter timing": data.arrival_minutes,
         }
         return tuple(name for name, value in fields.items() if value is None or value is False)
+
+    @staticmethod
+    def _high_risk_score(data: ReasoningInput) -> bool:
+        heart = data.risk_scores.get("HEART")
+        grace = data.risk_scores.get("GRACE")
+        heart_high = heart is not None and classify_heart_risk(int(heart)) is HeartRiskCategory.HIGH
+        grace_high = grace is not None and classify_grace_risk(int(grace)) is GraceRiskCategory.HIGH
+        return heart_high or grace_high
 
     @staticmethod
     def _conflicts(data: ReasoningInput) -> tuple[str, ...]:

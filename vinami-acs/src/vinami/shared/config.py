@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     ecg_fallback_provider: str = "mock"
     ecg_showcase_manifest_path: Path | None = None
     ecg_showcase_artifact_root: Path | None = None
+    ecg_stemi_checkpoint_path: Path | None = None
+    ecg_stemi_checkpoint_sha256: str | None = None
 
     @model_validator(mode="after")
     def validate_identity_configuration(self) -> Settings:

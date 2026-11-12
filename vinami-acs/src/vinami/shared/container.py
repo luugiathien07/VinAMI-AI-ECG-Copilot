@@ -39,6 +39,7 @@ from vinami.ecg.adapters.mock_provider import MockECGAIProvider
 from vinami.ecg.adapters.precomputed_showcase_provider import PTBXLShowcaseProvider
 from vinami.ecg.adapters.preprocessing import CanonicalECGPreprocessor, TechnicalECGQualityEngine
 from vinami.ecg.adapters.torch_provider import TorchConvNeXtV2Provider
+from vinami.ecg.adapters.torch_stemi_provider import TorchTCNStemiProvider
 from vinami.ecg.application.service import (
     ECGApplicationService,
     ECGQueryService,
@@ -160,6 +161,13 @@ class AppContainer:
             providers["ptbxl-showcase"] = PTBXLShowcaseProvider(
                 self.settings.ecg_showcase_manifest_path,
                 self.settings.ecg_showcase_artifact_root,
+            )
+        if self.settings.ecg_stemi_checkpoint_path and self.settings.ecg_stemi_checkpoint_sha256:
+            providers["torch-acs-stemi"] = TorchTCNStemiProvider(
+                self.settings.ecg_stemi_checkpoint_path,
+                self.settings.ecg_stemi_checkpoint_sha256,
+                self.settings.ecg_device,
+                self.settings.ecg_provider_timeout_seconds,
             )
         return providers
 

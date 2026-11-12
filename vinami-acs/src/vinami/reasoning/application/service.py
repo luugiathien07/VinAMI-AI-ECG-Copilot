@@ -12,6 +12,15 @@ from vinami.reasoning.domain.clinical_evidence import (
     PhysicianClinicalAssessment,
     PhysicianDecision,
 )
+from vinami.reasoning.domain.model import RiskScore
+from vinami.reasoning.domain.risk_scores import (
+    GraceScoreInput,
+    HeartScoreInput,
+    calculate_grace_score,
+    calculate_heart_score,
+    classify_grace_risk,
+    classify_heart_risk,
+)
 from vinami.shared.actor import ActorContext
 from vinami.shared.application_errors import ResourceConflictError, ResourceNotFoundError
 from vinami.shared.domain import require_text, utc_now
@@ -88,6 +97,22 @@ class RecordClinicalDecision:
     expected_decision_version: int | None = None
     correction_reason: str | None = None
     revoke: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RecordHeartScore:
+    case_id: UUID
+    inputs: HeartScoreInput
+    actor: ActorContext
+    idempotency_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecordGraceScore:
+    case_id: UUID
+    inputs: GraceScoreInput
+    actor: ActorContext
+    idempotency_key: str
 
 
 class ClinicalReasoningApplicationService:
@@ -315,6 +340,88 @@ class ClinicalReasoningApplicationService:
             uow.commit()
             return response
 
+    def record_heart_score(self, command: RecordHeartScore) -> dict[str, object]:
+        command.actor.require_physician()
+        fingerprint = command_fingerprint(asdict(command) | {"actor": command.actor.actor_id})
+        with self._uow() as uow:
+            duplicate = self._existing(
+                uow, command.actor, "record_heart_score", command.idempotency_key, fingerprint
+            )
+            if duplicate:
+                return duplicate.response_payload
+            case = uow.cases.get(command.case_id)
+            if case is None:
+                raise ResourceNotFoundError("clinical case was not found")
+            result = calculate_heart_score(command.inputs, utc_now())
+            score_id = uow.reasoning.save_risk_score(command.case_id, result.risk_score)
+            response = _risk_score_dict(score_id, result.risk_score, result.risk_category.value)
+            self._store(
+                uow,
+                command.actor,
+                "record_heart_score",
+                command.idempotency_key,
+                fingerprint,
+                score_id,
+                response,
+            )
+            self._event(
+                uow,
+                "RiskScoreRecorded.v1",
+                "RiskScore",
+                score_id,
+                1,
+                command.case_id,
+                command.actor,
+                {
+                    "name": "HEART",
+                    "value": result.risk_score.value,
+                    "category": response["category"],
+                },
+            )
+            uow.commit()
+            return response
+
+    def record_grace_score(self, command: RecordGraceScore) -> dict[str, object]:
+        command.actor.require_physician()
+        fingerprint = command_fingerprint(asdict(command) | {"actor": command.actor.actor_id})
+        with self._uow() as uow:
+            duplicate = self._existing(
+                uow, command.actor, "record_grace_score", command.idempotency_key, fingerprint
+            )
+            if duplicate:
+                return duplicate.response_payload
+            case = uow.cases.get(command.case_id)
+            if case is None:
+                raise ResourceNotFoundError("clinical case was not found")
+            result = calculate_grace_score(command.inputs, utc_now())
+            score_id = uow.reasoning.save_risk_score(command.case_id, result.risk_score)
+            response = _risk_score_dict(score_id, result.risk_score, result.risk_category.value)
+            self._store(
+                uow,
+                command.actor,
+                "record_grace_score",
+                command.idempotency_key,
+                fingerprint,
+                score_id,
+                response,
+            )
+            self._event(
+                uow,
+                "RiskScoreRecorded.v1",
+                "RiskScore",
+                score_id,
+                1,
+                command.case_id,
+                command.actor,
+                {
+                    "name": "GRACE",
+                    "value": result.risk_score.value,
+                    "category": response["category"],
+                },
+            )
+            uow.commit()
+            return response
+
     @staticmethod
     def _current_snapshot(
         uow: UnitOfWork, case_id: UUID, snapshot_id: UUID, expected_version: int
@@ -471,6 +578,31 @@ class ClinicalReasoningQueryService:
                     "and does not authorize treatment."
                 ),
             }
+
+    def risk_scores(self, case_id: UUID) -> list[dict[str, object]]:
+        with self._uow() as uow:
+            case = uow.cases.get(case_id)
+            if case is None:
+                raise ResourceNotFoundError("clinical case was not found")
+            classify = {"HEART": classify_heart_risk, "GRACE": classify_grace_risk}
+            return [
+                _risk_score_dict(None, score, classify[score.name](int(score.value)).value)
+                for score in uow.reasoning.risk_scores_for_case(case_id)
+                if score.name in classify
+            ]
+
+
+def _risk_score_dict(
+    score_id: UUID | None, score: RiskScore, category: str
+) -> dict[str, object]:
+    return {
+        "risk_score_id": str(score_id) if score_id else None,
+        "name": score.name,
+        "value": score.value,
+        "category": category,
+        "algorithm_version": score.algorithm_version,
+        "calculated_at": score.calculated_at.isoformat(),
+    }
 
 
 def _snapshot_dict(s: Any) -> dict[str, object]:

@@ -221,6 +221,36 @@ export class VinamiApiClient {
     );
   }
 
+  async getRiskScores(caseId: string): Promise<unknown> {
+    return this.rawJson(
+      `/api/v1/clinical-cases/${caseId}/clinical-reasoning/risk-scores`,
+    );
+  }
+
+  async recordHeartScore(
+    caseId: string,
+    body: unknown,
+    idempotencyKey: string,
+  ): Promise<unknown> {
+    return this.postJson(
+      `/api/v1/clinical-cases/${caseId}/clinical-reasoning/risk-scores/heart`,
+      body,
+      idempotencyKey,
+    );
+  }
+
+  async recordGraceScore(
+    caseId: string,
+    body: unknown,
+    idempotencyKey: string,
+  ): Promise<unknown> {
+    return this.postJson(
+      `/api/v1/clinical-cases/${caseId}/clinical-reasoning/risk-scores/grace`,
+      body,
+      idempotencyKey,
+    );
+  }
+
   async getWorkflowOperationsWorkspace(
     caseId: string,
   ): Promise<WorkflowOperationsWorkspace> {

@@ -14,6 +14,7 @@ import {
   viStatus,
 } from "@web/shared/locale/vi";
 import { EvidenceStatusSummary } from "@web/features/evidence/evidence-status-summary";
+import { RiskScoresPanel } from "./risk-scores-panel";
 import {
   clinicalReasoningWorkspaceSchema,
   type AssessmentView,
@@ -506,6 +507,8 @@ export function ClinicalReasoningWorkspace({
           }))}
         />
       </div>
+
+      <RiskScoresPanel caseId={caseId} />
 
       <nav
         className="vm-card vm-reasoning-links"

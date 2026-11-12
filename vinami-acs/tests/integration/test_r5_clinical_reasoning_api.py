@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from tests.integration.test_r3_ecg_api import _case, _headers, _settings
 
 from vinami.audit.adapters.persistence import AuditLogRecord, OutboxEventRecord
+from vinami.reasoning.adapters.persistence import RiskScoreRecord
 from vinami.reasoning.adapters.r5_persistence import (
     ClinicalEvidenceSnapshotRecord,
     ClinicalReasoningDecisionRecord,
@@ -229,3 +230,83 @@ def test_r5_cath_lab_authorization_is_physician_only_and_revocable(
             )
             assert revocation is not None
             assert revocation.decision_status.value == "revoked"
+
+
+def test_r5_heart_and_grace_scores_computed_persisted_and_idempotent(
+    postgres_session_factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    app = create_app(_settings(tmp_path / "r5-risk-scores"))
+    with TestClient(app) as client:
+        clinical_case = _case(client)
+        case_id = str(clinical_case["case_id"])
+
+        heart_body = {
+            "history": "highly_suspicious",
+            "ecg": "significant_st_deviation",
+            "age_years": 70,
+            "risk_factor_count": 3,
+            "has_atherosclerotic_disease_history": True,
+            "troponin_multiple_of_upper_limit_normal": 5.0,
+        }
+        heart_key = f"heart-{uuid4()}"
+        first = client.post(
+            f"/api/v1/clinical-cases/{case_id}/clinical-reasoning/risk-scores/heart",
+            headers=_headers(heart_key, "physician"),
+            json=heart_body,
+        )
+        assert first.status_code == 201, first.text
+        assert first.json()["name"] == "HEART"
+        assert first.json()["value"] == 10.0
+        assert first.json()["category"] == "high"
+
+        duplicate = client.post(
+            f"/api/v1/clinical-cases/{case_id}/clinical-reasoning/risk-scores/heart",
+            headers=_headers(heart_key, "physician"),
+            json=heart_body,
+        )
+        assert duplicate.json()["risk_score_id"] == first.json()["risk_score_id"]
+
+        rejected = client.post(
+            f"/api/v1/clinical-cases/{case_id}/clinical-reasoning/risk-scores/heart",
+            headers=_headers(f"heart-nurse-{uuid4()}", "nurse"),
+            json=heart_body,
+        )
+        assert rejected.status_code == 403
+
+        grace_body = {
+            "age_years": 75.0,
+            "heart_rate_bpm": 120.0,
+            "systolic_bp_mmhg": 90.0,
+            "creatinine_mg_dl": 2.2,
+            "killip_class": "iii",
+            "cardiac_arrest_at_admission": False,
+            "st_segment_deviation": True,
+            "elevated_cardiac_enzymes": True,
+        }
+        grace = client.post(
+            f"/api/v1/clinical-cases/{case_id}/clinical-reasoning/risk-scores/grace",
+            headers=_headers(f"grace-{uuid4()}", "physician"),
+            json=grace_body,
+        )
+        assert grace.status_code == 201, grace.text
+        assert grace.json()["name"] == "GRACE"
+        assert grace.json()["category"] == "high"
+
+        listed = client.get(
+            f"/api/v1/clinical-cases/{case_id}/clinical-reasoning/risk-scores",
+            headers=_headers(identity="physician"),
+        )
+        assert listed.status_code == 200, listed.text
+        names = {row["name"] for row in listed.json()}
+        assert names == {"HEART", "GRACE"}
+
+        with postgres_session_factory() as session:
+            case_uuid = UUID(case_id)
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(RiskScoreRecord)
+                    .where(RiskScoreRecord.case_id == case_uuid)
+                )
+                == 2
+            )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
@@ -14,8 +15,17 @@ from vinami.reasoning.application.service import (
     CreateEvidenceSnapshot,
     RecordClinicalAssessment,
     RecordClinicalDecision,
+    RecordGraceScore,
+    RecordHeartScore,
 )
 from vinami.reasoning.domain.clinical_evidence import ClinicalDecisionType
+from vinami.reasoning.domain.risk_scores import (
+    GraceScoreInput,
+    HeartEcgCategory,
+    HeartHistoryCategory,
+    HeartScoreInput,
+    KillipClass,
+)
 from vinami.shared.container import AppContainer
 
 router = APIRouter(prefix="/api/v1", tags=["clinical-reasoning"])
@@ -86,6 +96,44 @@ class ClinicalReasoningWorkspaceResponse(BaseModel):
     safety_notice: str
 
 
+class HeartScoreBody(BaseModel):
+    """Physician-supplied HEART score inputs; no field is auto-derived from stored data."""
+
+    model_config = ConfigDict(extra="forbid")
+    history: HeartHistoryCategory
+    ecg: HeartEcgCategory
+    age_years: int = Field(ge=0)
+    risk_factor_count: int = Field(ge=0)
+    has_atherosclerotic_disease_history: bool
+    troponin_multiple_of_upper_limit_normal: float = Field(ge=0)
+
+
+class GraceScoreBody(BaseModel):
+    """Physician-supplied GRACE score inputs; no field is auto-derived from stored data."""
+
+    model_config = ConfigDict(extra="forbid")
+    age_years: float = Field(ge=0)
+    heart_rate_bpm: float = Field(ge=0)
+    systolic_bp_mmhg: float = Field(ge=0)
+    creatinine_mg_dl: float = Field(ge=0)
+    killip_class: KillipClass
+    cardiac_arrest_at_admission: bool
+    st_segment_deviation: bool
+    elevated_cardiac_enzymes: bool
+
+
+class RiskScoreResponse(BaseModel):
+    """Generated-client contract for one computed, persisted risk score."""
+
+    model_config = ConfigDict(extra="forbid")
+    risk_score_id: str | None
+    name: str
+    value: float
+    category: str
+    algorithm_version: str
+    calculated_at: datetime
+
+
 def _container(request: Request) -> AppContainer:
     return cast(AppContainer, request.app.state.container)
 
@@ -100,6 +148,88 @@ def workspace(
     _: Annotated[AuthorizedIdentity, Depends(authorize_for(Permission.CLINICAL_REASONING_READ))],
 ) -> dict[str, object]:
     return _container(request).clinical_reasoning_queries().workspace(case_id)
+
+
+@router.get(
+    "/clinical-cases/{case_id}/clinical-reasoning/risk-scores",
+    response_model=list[RiskScoreResponse],
+)
+def risk_scores(
+    case_id: UUID,
+    request: Request,
+    _: Annotated[AuthorizedIdentity, Depends(authorize_for(Permission.CLINICAL_REASONING_READ))],
+) -> list[dict[str, object]]:
+    return _container(request).clinical_reasoning_queries().risk_scores(case_id)
+
+
+@router.post(
+    "/clinical-cases/{case_id}/clinical-reasoning/risk-scores/heart",
+    status_code=201,
+    response_model=RiskScoreResponse,
+)
+def record_heart_score(
+    case_id: UUID,
+    body: HeartScoreBody,
+    request: Request,
+    headers: Annotated[
+        CommandHeaders, Depends(command_headers_for(Permission.CLINICAL_REASONING_WRITE))
+    ],
+) -> dict[str, object]:
+    return (
+        _container(request)
+        .clinical_reasoning_application()
+        .record_heart_score(
+            RecordHeartScore(
+                case_id,
+                HeartScoreInput(
+                    body.history,
+                    body.ecg,
+                    body.age_years,
+                    body.risk_factor_count,
+                    body.has_atherosclerotic_disease_history,
+                    body.troponin_multiple_of_upper_limit_normal,
+                ),
+                headers.actor,
+                headers.idempotency_key,
+            )
+        )
+    )
+
+
+@router.post(
+    "/clinical-cases/{case_id}/clinical-reasoning/risk-scores/grace",
+    status_code=201,
+    response_model=RiskScoreResponse,
+)
+def record_grace_score(
+    case_id: UUID,
+    body: GraceScoreBody,
+    request: Request,
+    headers: Annotated[
+        CommandHeaders, Depends(command_headers_for(Permission.CLINICAL_REASONING_WRITE))
+    ],
+) -> dict[str, object]:
+    return (
+        _container(request)
+        .clinical_reasoning_application()
+        .record_grace_score(
+            RecordGraceScore(
+                case_id,
+                GraceScoreInput(
+                    body.age_years,
+                    body.heart_rate_bpm,
+                    body.systolic_bp_mmhg,
+                    body.creatinine_mg_dl,
+                    body.killip_class,
+                    body.cardiac_arrest_at_admission,
+                    body.st_segment_deviation,
+                    body.elevated_cardiac_enzymes,
+                ),
+                headers.actor,
+                headers.idempotency_key,
+            )
+        )
+    )
 
 
 @router.post("/clinical-cases/{case_id}/clinical-reasoning/snapshots", status_code=201)

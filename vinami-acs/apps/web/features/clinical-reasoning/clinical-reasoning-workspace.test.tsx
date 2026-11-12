@@ -58,6 +58,9 @@ vi.mock("@web/shared/api/browser", () => ({
     recordClinicalDecision: vi.fn(),
     correctClinicalDecision: vi.fn(),
     revokeClinicalDecision: vi.fn(),
+    getRiskScores: vi.fn().mockResolvedValue([]),
+    recordHeartScore: vi.fn(),
+    recordGraceScore: vi.fn(),
   }),
 }));
 

@@ -17,6 +17,7 @@ from vinami.ecg.adapters.r3_persistence import (
     ECGStudyDetailRecord,
     PhysicianECGInterpretationRecord,
 )
+from vinami.reasoning.adapters.persistence import RiskScoreRecord
 from vinami.reasoning.domain.clinical_evidence import (
     ClinicalDecisionType,
     ClinicalEvidenceSnapshot,
@@ -26,6 +27,7 @@ from vinami.reasoning.domain.clinical_evidence import (
     PhysicianClinicalAssessment,
     PhysicianDecision,
 )
+from vinami.reasoning.domain.model import RiskScore
 from vinami.shared.domain import utc_now
 from vinami.shared.persistence import Base, JSONDocument, UTCDateTime, UUIDType
 from vinami.triage.adapters.persistence import (
@@ -512,6 +514,30 @@ class SQLAlchemyClinicalReasoningRepository:
                     )
                 )
             )
+        )
+
+    def save_risk_score(self, case_id: UUID, score: RiskScore) -> UUID:
+        score_id = uuid4()
+        self._session.add(
+            RiskScoreRecord(
+                id=score_id,
+                case_id=case_id,
+                name=score.name,
+                value=score.value,
+                algorithm_version=score.algorithm_version,
+                calculated_at=score.calculated_at,
+            )
+        )
+        return score_id
+
+    def risk_scores_for_case(self, case_id: UUID) -> tuple[RiskScore, ...]:
+        records = self._session.scalars(
+            select(RiskScoreRecord)
+            .where(RiskScoreRecord.case_id == case_id)
+            .order_by(RiskScoreRecord.calculated_at.desc())
+        ).all()
+        return tuple(
+            RiskScore(r.name, r.value, r.algorithm_version, r.calculated_at) for r in records
         )
 
 
