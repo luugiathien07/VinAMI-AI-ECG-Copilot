@@ -10,4 +10,11 @@ opencv-python-headless
 scipy
 pywavelets
 tabulate
-
+scikit-learn
+wfdb
+openpyxl
+python-docx
+python-pptx
+sktime
+joblib
+neurokit2

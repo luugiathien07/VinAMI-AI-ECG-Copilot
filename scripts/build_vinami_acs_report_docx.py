@@ -15,7 +15,7 @@ from docx.shared import Cm, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "docs" / "report" / "VinAMI_ACS_MVP_Report.md"
-OUTPUT = ROOT / "VinAMI_ACS_MVP_Report.docx"
+OUTPUT = ROOT / "docs" / "report" / "VinAMI_ACS_MVP_Report.docx"
 TEAL = "007F86"
 INK = "18363A"
 MUTED = "60767A"

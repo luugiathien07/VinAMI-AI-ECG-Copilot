@@ -114,24 +114,33 @@ def selective_prediction_report(
     y_true: np.ndarray,
     y_prob: np.ndarray,
     coverages: tuple[float, ...] = (1.0, 0.9, 0.8, 0.7, 0.6, 0.5),
+    confidence: np.ndarray | None = None,
 ) -> list[dict]:
     """Metrics after keeping only the top `coverage` fraction most-confident
-    cases (highest confidence_proxy), ranked from most to least confident.
+    cases, ranked from most to least confident.
 
     Mirrors the paper's "exclude low-confidence cases, does AUC/sensitivity
     improve" analysis (Methods/Results, PMID 36532114) at a fixed 0.5
     threshold. Report both the metric-at-full-coverage and the trend as
     coverage drops -- a model where confidence tracks correctness should show
     AUC/sensitivity rising and false_negative_rate falling as coverage drops;
-    a flat or noisy trend means confidence_proxy is not actually informative
-    for this model and the cutoff should not be relied on clinically.
+    a flat or noisy trend means the confidence measure is not actually
+    informative for this model and the cutoff should not be relied on
+    clinically.
+
+    `confidence`: pass the real per-sample confidence when available (e.g.
+    1/sigma from src/train_lvef_regression.py's Gaussian head -- see
+    --sigma-key below). Defaults to confidence_proxy(y_prob), the
+    distance-from-0.5 approximation this module's docstring explains is
+    weaker than the paper's calibrated uncertainty.
     """
-    confidence = confidence_proxy(y_prob)
+    if confidence is None:
+        confidence = confidence_proxy(y_prob)
     order = np.argsort(-confidence)  # most confident first
     n = len(y_true)
     rows = []
     for coverage in coverages:
-        k = max(int(round(n * coverage)), 1)
+        k = max(round(n * coverage), 1)
         keep = order[:k]
         y_true_kept, y_prob_kept = y_true[keep], y_prob[keep]
         row: dict = {
@@ -185,8 +194,15 @@ def cmd_score(args: argparse.Namespace) -> None:
         )
 
     if args.selective_prediction:
-        print("\nselective_prediction (Lee et al. 2022, PMID 36532114 -- see module docstring for caveats):")
-        for row in selective_prediction_report(y_test, prob_test):
+        confidence = None
+        if args.sigma_key:
+            if args.sigma_key not in data:
+                raise SystemExit(f"--sigma-key {args.sigma_key} khong co trong {args.probabilities}")
+            confidence = 1.0 / np.maximum(data[args.sigma_key], 1e-6)
+            print(f"\nselective_prediction (real degree-of-confidence = 1/{args.sigma_key}, per Lee et al. 2022, PMID 36532114):")
+        else:
+            print("\nselective_prediction (Lee et al. 2022, PMID 36532114 -- see module docstring for caveats):")
+        for row in selective_prediction_report(y_test, prob_test, confidence=confidence):
             print(f"  {row}")
 
 
@@ -237,6 +253,14 @@ def main() -> None:
         action="store_true",
         help="Report AUC/sensitivity/specificity after excluding low-confidence cases "
         "(proxy for Lee et al. 2022's degree-of-confidence filtering; see module docstring).",
+    )
+    parser.add_argument(
+        "--sigma-key",
+        type=str,
+        default=None,
+        help="With --selective-prediction: name of an array in --probabilities holding the REAL "
+        "predicted per-sample sigma (e.g. 'sigma_test' from src/train_lvef_regression.py), used as "
+        "1/sigma instead of the distance-from-0.5 confidence_proxy.",
     )
     args = parser.parse_args()
 

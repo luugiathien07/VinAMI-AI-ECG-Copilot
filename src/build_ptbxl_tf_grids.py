@@ -7,6 +7,7 @@ This writes a new image manifest:
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import matplotlib
@@ -40,6 +41,22 @@ def bandpass(signal: np.ndarray, fs: int) -> np.ndarray:
     return scipy.signal.sosfiltfilt(sos, signal)
 
 
+def wavelet_denoise(signal: np.ndarray, wavelet: str = "db6", level: int = 4) -> np.ndarray:
+    """VisuShrink wavelet-threshold denoising (Donoho & Johnstone 1994).
+
+    Soft-thresholds detail coefficients at a universal threshold derived
+    from the noise level (estimated via MAD of the finest-scale details);
+    approximation coefficients are left untouched. No training data needed.
+    """
+    max_level = pywt.dwt_max_level(len(signal), pywt.Wavelet(wavelet).dec_len)
+    coeffs = pywt.wavedec(signal, wavelet, level=min(level, max_level))
+    sigma = np.median(np.abs(coeffs[-1])) / 0.6745
+    if sigma > 0:
+        threshold = sigma * np.sqrt(2 * np.log(len(signal)))
+        coeffs[1:] = [pywt.threshold(detail, threshold, mode="soft") for detail in coeffs[1:]]
+    return pywt.waverec(coeffs, wavelet)[: len(signal)]
+
+
 def cwt_image(signal: np.ndarray, fs: int, bins: int = 96) -> np.ndarray:
     frequencies = np.linspace(1, min(45, fs / 2 - 1), bins)
     wavelet = "morl"
@@ -62,10 +79,13 @@ def stft_image(signal: np.ndarray, fs: int) -> np.ndarray:
     return 20 * np.log10(spectrum[keep] + 1e-8)
 
 
-def render_grid(signals: np.ndarray, fs: int, representation: str, output_path: Path) -> None:
+def render_grid(signals: np.ndarray, fs: int, representation: str, output_path: Path, denoise: bool = False) -> None:
     fig, axes = plt.subplots(4, 3, figsize=(6, 8), dpi=120)
     for idx, ax in enumerate(axes.flat):
-        ecg = normalize_signal(bandpass(signals[:, idx], fs))
+        filtered = bandpass(signals[:, idx], fs)
+        if denoise:
+            filtered = wavelet_denoise(filtered)
+        ecg = normalize_signal(filtered)
         if representation == "cwt":
             image = cwt_image(ecg, fs)
         elif representation == "stft":
@@ -81,11 +101,35 @@ def render_grid(signals: np.ndarray, fs: int, representation: str, output_path: 
     plt.close(fig)
 
 
-def read_record(ptbxl_root: Path, row: pd.Series, sampling: str) -> tuple[np.ndarray, int]:
+def read_record(ptbxl_root: Path, row: pd.Series | dict, sampling: str) -> tuple[np.ndarray, int]:
     filename_col = "filename_hr" if sampling == "500" else "filename_lr"
     record_base = ptbxl_root / row[filename_col]
     signals, fields = wfdb.rdsamp(str(record_base))
     return signals, int(fields["fs"])
+
+
+def render_record(job: tuple) -> tuple[dict | None, str | None]:
+    """Render one record, or report why it could not be rendered.
+
+    Returns the manifest row on success. An image that is already on disk is
+    kept and its row returned without re-rendering, so an interrupted run is
+    resumed by simply invoking the same command again.
+
+    A missing or truncated record is reported instead of raised: PTB-XL is
+    often only partially downloaded, and one absent .hea used to abort the
+    whole render and leave no manifest behind at all.
+    """
+    row, ptbxl_root, sampling, representation, image_path, denoise = job
+    try:
+        if not (image_path.exists() and image_path.stat().st_size > 0):
+            signals, fs = read_record(ptbxl_root, row, sampling)
+            render_grid(signals, fs, representation, image_path, denoise=denoise)
+    except (FileNotFoundError, ValueError, OSError) as error:
+        return None, f"{row.get('ecg_id', '?')}: {error}"
+
+    output = dict(row)
+    output["image_path"] = str(image_path)
+    return output, None
 
 
 def balanced_limit(manifest: pd.DataFrame, limit: int | None) -> pd.DataFrame:
@@ -108,27 +152,51 @@ def main() -> None:
     parser.add_argument("--representation", choices=["cwt", "stft"], default="cwt")
     parser.add_argument("--sampling", choices=["100", "500"], default="100")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--workers", type=int, default=12, help="Parallel render processes.")
+    parser.add_argument(
+        "--denoise",
+        action="store_true",
+        help="Apply wavelet-threshold denoising (VisuShrink) after the bandpass filter.",
+    )
     args = parser.parse_args()
 
     manifest = pd.read_csv(args.manifest)
     manifest = balanced_limit(manifest, args.limit)
 
-    image_rows = []
-    for _, row in tqdm(manifest.iterrows(), total=len(manifest)):
-        signals, fs = read_record(args.ptbxl_root, row, args.sampling)
+    jobs = []
+    for _, row in manifest.iterrows():
         rel_path = Path(row["split"]) / f"{int(row['ecg_id']):05d}_{args.representation}.png"
-        image_path = args.outdir / rel_path
-        render_grid(signals, fs, args.representation, image_path)
+        jobs.append(
+            (row.to_dict(), args.ptbxl_root, args.sampling, args.representation, args.outdir / rel_path, args.denoise)
+        )
 
-        output = row.to_dict()
-        output["image_path"] = str(image_path)
-        image_rows.append(output)
+    image_rows = []
+    failed = 0
+    # One 12-lead CWT grid costs ~1-2.5 s of CPU, so the full 21.8k-record
+    # database is many hours serially; the renders are independent, so fan
+    # them out over processes the way build_snomed_ecg_manifest.py does.
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        futures = [pool.submit(render_record, job) for job in jobs]
+        for future in tqdm(as_completed(futures), total=len(futures)):
+            output, error = future.result()
+            if error:
+                failed += 1
+                if failed <= 20:
+                    print(f"  ! {error}")
+            else:
+                image_rows.append(output)
+
+    if failed:
+        print(f"Skipped {failed} records that could not be read (missing or truncated download)")
+    if not image_rows:
+        raise SystemExit("Khong render duoc ban ghi nao - kiem tra lai du lieu PTB-XL da tai chua")
 
     image_manifest = pd.DataFrame(image_rows)
+    image_manifest = image_manifest.sort_values(["split", "ecg_id"]).reset_index(drop=True)  # as_completed order is nondeterministic
     manifest_path = args.outdir / "manifest_images.csv"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     image_manifest.to_csv(manifest_path, index=False)
-    print(f"Saved image manifest: {manifest_path}")
+    print(f"Saved image manifest: {manifest_path} ({len(image_manifest)} rows)")
 
 
 if __name__ == "__main__":

@@ -204,11 +204,21 @@ def cmd_train(args: argparse.Namespace) -> None:
         reference = pd.read_csv(args.split_from)[["record_id", "split"]]
         reference["record_id"] = reference["record_id"].astype(str)
         index["record_id"] = index["record_id"].astype(str)
-        index = index.merge(reference, on="record_id", how="inner")
+        # Drop any pre-existing 'split' column before merging: cache_echonext_signals.py's
+        # index.csv already carries the dataset's own official split, and --split-from
+        # is often pointed at that SAME file to reuse it -- without the drop, pandas
+        # would suffix both to split_x/split_y and the "split" column used below would
+        # silently not exist.
+        index = index.drop(columns=["split"], errors="ignore").merge(reference, on="record_id", how="inner")
         print(f"Dung split tu {args.split_from}: {len(index)} ban ghi khop")
     else:
         index["split"] = assign_patient_splits(index, args.seed, args.val_frac, args.test_frac)
         print(f"Chia split theo benh nhan (seed={args.seed}): {index['split'].value_counts().to_dict()}")
+
+    before = len(index)
+    index = index[index[args.label].notna()].reset_index(drop=True)
+    if len(index) != before:
+        print(f"Bo {before - len(index)}/{before} ban ghi thieu nhan {args.label}")
 
     if args.features_cache and args.features_cache.exists():
         feat_frame = pd.read_parquet(args.features_cache)

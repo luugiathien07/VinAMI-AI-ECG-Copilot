@@ -34,6 +34,7 @@ Da co ban MVP gom:
 ```text
 .
 +-- HUONG_DAN_CHAY_LAI.md       # huong dan cho nguoi clone repo chay demo
++-- HUONG_DAN_MVP_ECG.md        # huong dan chay MVP model ECG da nhan + UI tieng Viet (app_vi.py)
 +-- vinami-acs/                 # ung dung VinAMI ACS chinh
 |   +-- apps/api/               # FastAPI
 |   +-- apps/web/               # Next.js UI
